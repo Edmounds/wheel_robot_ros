@@ -34,8 +34,12 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     autostart = LaunchConfiguration("autostart")
     scan_topic = LaunchConfiguration("scan_topic")
+    imu_topic = LaunchConfiguration("imu_topic")
+    configuration_basename = LaunchConfiguration("configuration_basename")
+    use_lidar_driver = LaunchConfiguration("use_lidar_driver")
     base_frame = LaunchConfiguration("base_frame")
     laser_frame = LaunchConfiguration("laser_frame")
+    publish_static_laser_tf = LaunchConfiguration("publish_static_laser_tf")
     laser_x = LaunchConfiguration("laser_x")
     laser_y = LaunchConfiguration("laser_y")
     laser_z = LaunchConfiguration("laser_z")
@@ -72,25 +76,36 @@ def generate_launch_description():
         DeclareLaunchArgument("use_sim_time", default_value="false"),
         DeclareLaunchArgument("autostart", default_value="true"),
         DeclareLaunchArgument("scan_topic", default_value="/scan"),
+        DeclareLaunchArgument("imu_topic", default_value="/imu/data"),
+        DeclareLaunchArgument(
+            "configuration_basename",
+            default_value="n10p_2d_localization.lua",
+        ),
+        DeclareLaunchArgument("use_lidar_driver", default_value="true"),
         DeclareLaunchArgument("base_frame", default_value="base_link"),
         DeclareLaunchArgument("laser_frame", default_value="laser_link"),
+        DeclareLaunchArgument("publish_static_laser_tf", default_value="true"),
         DeclareLaunchArgument("laser_x", default_value="0.0"),
         DeclareLaunchArgument("laser_y", default_value="0.0"),
         DeclareLaunchArgument("laser_z", default_value="0.0"),
         DeclareLaunchArgument("laser_yaw", default_value="0.0"),
         DeclareLaunchArgument("laser_pitch", default_value="0.0"),
         DeclareLaunchArgument("laser_roll", default_value="0.0"),
-        DeclareLaunchArgument("use_rviz", default_value="true"),
+        DeclareLaunchArgument("use_rviz", default_value="false"),
         DeclareLaunchArgument("rviz_config", default_value=default_rviz_config),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(localization_launch),
             launch_arguments={
                 "use_sim_time": use_sim_time,
                 "scan_topic": scan_topic,
+                "imu_topic": imu_topic,
+                "configuration_basename": configuration_basename,
                 "load_state_filename": pbstream,
                 "load_frozen_state": "true",
+                "use_lidar_driver": use_lidar_driver,
                 "base_frame": base_frame,
                 "laser_frame": laser_frame,
+                "publish_static_laser_tf": publish_static_laser_tf,
                 "laser_x": laser_x,
                 "laser_y": laser_y,
                 "laser_z": laser_z,
