@@ -22,6 +22,19 @@
 
 - `cartographer_config`：雷达启动、建图、定位、Cartographer 虚拟 odom
 - `navigation`：Nav2 参数和导航启动
+- `gesture_control`：单目摄像头手势识别，发布 `/cmd_vel` 并通过 service 控制轮腿升降
+
+### 手势控制
+
+`gesture_control` 内置 Qualcomm MediaPipe-Hand QNN 必要资产。当前电脑没有 QNN/aidlite 运行环境时，节点会提示 backend 错误；上板后通常只需要在配置里改摄像头路径。
+
+```bash
+colcon build --symlink-install --packages-select gesture_control
+source install/setup.bash
+ros2 launch gesture_control gesture_control.launch.py camera_path:=/dev/video0
+```
+
+升降 service 为 `gesture_control/srv/SetBodyHeight`，`command=1` 表示升高，`command=0` 表示降低。
 
 ### 依赖
 
@@ -29,6 +42,21 @@
 
 ```bash
 sudo apt install ros-humble-navigation2 ros-humble-nav2-bringup
+```
+
+如果要启动 Gazebo 图形界面体验仿真流程：
+
+```bash
+colcon build --symlink-install --packages-select sim
+source install/setup.bash
+ros2 launch sim sim_gui.launch.py
+```
+
+另开一个终端可以直接给仿真车发速度：
+
+```bash
+source install/setup.bash
+ros2 topic pub /cmd_vel geometry_msgs/msg/Twist "{linear: {x: 0.15}, angular: {z: 0.3}}" -r 10
 ```
 
 ### 建图

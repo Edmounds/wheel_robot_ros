@@ -1,0 +1,16 @@
+xbox_series_teleop_node:
+  ros__parameters:
+    joy_topic: /joy
+    cmd_vel_topic: /cmd_vel
+    require_enable_button: true
+    enable_button: 5      # RB
+    turbo_button: 4       # LB
+    linear_axis: 1        # Left stick vertical
+    angular_axis: 3       # Right stick horizontal
+    deadzone: 0.08
+    normal_linear_scale: 0.35
+    normal_angular_scale: 0.9
+    turbo_linear_scale: 0.7
+    turbo_angular_scale: 1.6
+    publish_rate_hz: 30.0
+    joy_timeout_sec: 0.5

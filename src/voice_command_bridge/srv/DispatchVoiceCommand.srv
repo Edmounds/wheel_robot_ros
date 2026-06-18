@@ -1,0 +1,6 @@
+string commands_json
+---
+bool ok
+string status
+string command_name
+string message

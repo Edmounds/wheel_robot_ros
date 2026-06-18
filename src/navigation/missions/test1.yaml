@@ -1,0 +1,15 @@
+mission_name: test1
+frame_id: map
+planning_mode: straight_line
+segments:
+  - segment_name: seg_001
+    start:
+      x: 0.00069842035820225751
+      y: 6.4056452326060717e-07
+      yaw: 2.2465183189449854e-07
+    waypoints:
+      []
+    goal:
+      x: -1.0976505374235208
+      y: -3.5789492920925525
+      yaw: -2.1346265601661716

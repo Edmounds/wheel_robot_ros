@@ -61,6 +61,11 @@ def generate_launch_description():
             output="screen",
             condition=UnlessCondition(paused),
         ),
+        ExecuteProcess(
+            cmd=["gzclient", "--verbose"],
+            output="screen",
+            condition=UnlessCondition(headless),
+        ),
         Node(
             package="robot_state_publisher",
             executable="robot_state_publisher",

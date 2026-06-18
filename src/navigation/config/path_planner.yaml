@@ -1,0 +1,22 @@
+path_planner_node:
+  ros__parameters:
+    map_yaml: indoor_flat.yaml
+    planning_mode: straight_line
+    costmap_publish_topic: /costmap
+    odom_topic: /Odometry
+    goal_topic: /direct_goal_pose
+    plan_topic: /plan
+    planning_frame_id: map
+    lethal_cost_threshold: 65
+    allow_unknown: false
+    weight: 1.0
+    max_search_iterations: 250000
+    interpolation_resolution: 0.05
+    inflation_radius: 0.55
+
+mission_manager_node:
+  ros__parameters:
+    missions_dir: ""
+    odom_topic: /Odometry
+    frame_id: map
+    planning_mode: straight_line

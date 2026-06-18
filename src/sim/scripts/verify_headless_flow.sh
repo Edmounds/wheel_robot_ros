@@ -14,6 +14,9 @@ RUN_DIR="${RUN_DIR:-/tmp/wheel_robot_sim_verify_$(date +%Y%m%d_%H%M%S)}"
 LOG_DIR="${RUN_DIR}/logs"
 MAP_PREFIX="${RUN_DIR}/ab_map"
 PBSTREAM="${RUN_DIR}/ab_map.pbstream"
+MAPS_DIR="${RUN_DIR}/maps"
+MAP_NAME="ab_map"
+SAVED_MAP_DIR="${MAPS_DIR}/${MAP_NAME}"
 
 A_X="${A_X:--2.0}"
 A_Y="${A_Y:--1.4}"
@@ -118,8 +121,6 @@ yaw_quaternion_zw() {
 
 cleanup() {
   stop_process "${PLAN_ECHO_PID:-}"
-  stop_process "${NAV_PID:-}"
-  stop_process "${MAPPING_PID:-}"
   stop_process "${SIM_PID:-}"
   stop_sim_stack
 }
@@ -138,8 +139,14 @@ log "run directory: ${RUN_DIR}"
 log "gazebo master: ${GAZEBO_MASTER_URI}"
 
 log "starting headless Gazebo for mapping"
-setsid ros2 launch sim sim_world.launch.py x:="${A_X}" y:="${A_Y}" yaw:="${A_YAW}" use_sim_time:=true \
-  >"${LOG_DIR}/sim_mapping.log" 2>&1 &
+setsid ros2 launch sim sim_mapping_workflow.launch.py \
+  x:="${A_X}" y:="${A_Y}" yaw:="${A_YAW}" \
+  headless:=true \
+  use_rviz:=false \
+  use_voice:=false \
+  map_name:="${MAP_NAME}" \
+  maps_dir:="${MAPS_DIR}" \
+  >"${LOG_DIR}/sim_mapping_workflow.log" 2>&1 &
 SIM_PID=$!
 wait_for_topic /clock 45
 wait_for_topic /scan 60
@@ -150,18 +157,8 @@ wait_for_topic_msg /imu/data 30 imu_mapping.log
 wait_for_service /unpause_physics 30
 ros2 service call /unpause_physics std_srvs/srv/Empty '{}' >"${LOG_DIR}/unpause_mapping.log" 2>&1 || true
 
-log "starting Cartographer mapping with simulated lidar + imu"
-setsid ros2 launch cartographer_config cartographer_mapping.launch.py \
-  use_sim_time:=true \
-  use_lidar_driver:=false \
-  use_rviz:=false \
-  publish_static_laser_tf:=false \
-  configuration_basename:=sim_2d.lua \
-  scan_topic:=/scan \
-  imu_topic:=/imu/data \
-  >"${LOG_DIR}/cartographer_mapping.log" 2>&1 &
-MAPPING_PID=$!
 wait_for_service /write_state 60
+wait_for_service /cartographer/save_map 60
 wait_for_topic /map 90
 
 log "driving an exploration loop for mapping"
@@ -175,31 +172,32 @@ timeout 1 ros2 topic pub /cmd_vel geometry_msgs/msg/Twist \
   "{linear: {x: 0.0}, angular: {z: 0.0}}" \
   >"${LOG_DIR}/mapping_drive_stop.log" 2>&1 || true
 
-log "saving Cartographer state and Nav2 occupancy map"
-ros2 service call /write_state cartographer_ros_msgs/srv/WriteState \
-  "{filename: '${PBSTREAM}', include_unfinished_submaps: true}" \
-  >"${LOG_DIR}/write_state.log" 2>&1
-grep -q "code=0" "${LOG_DIR}/write_state.log" || grep -q "code: 0" "${LOG_DIR}/write_state.log" \
-  || die "Cartographer /write_state did not report OK"
+log "saving Cartographer state and Nav2 occupancy map through workflow service"
+ros2 service call /cartographer/save_map std_srvs/srv/Trigger '{}' \
+  >"${LOG_DIR}/cartographer_save_map.log" 2>&1
+grep -q "success=True" "${LOG_DIR}/cartographer_save_map.log" || grep -q "success: true" "${LOG_DIR}/cartographer_save_map.log" \
+  || die "/cartographer/save_map did not report success"
+PBSTREAM="${SAVED_MAP_DIR}/${MAP_NAME}.pbstream"
+MAP_PREFIX="${SAVED_MAP_DIR}/map"
 test -s "${PBSTREAM}" || die "pbstream file was not created: ${PBSTREAM}"
-
-timeout 45 ros2 run nav2_map_server map_saver_cli -f "${MAP_PREFIX}" \
-  >"${LOG_DIR}/map_saver.log" 2>&1 \
-  || die "map_saver_cli failed; see ${LOG_DIR}/map_saver.log"
 test -s "${MAP_PREFIX}.yaml" || die "map yaml was not created"
 test -s "${MAP_PREFIX}.pgm" || test -s "${MAP_PREFIX}.png" || die "map image was not created"
 
 ros2 service call /pause_physics std_srvs/srv/Empty '{}' >"${LOG_DIR}/pause_mapping.log" 2>&1 || true
-stop_process "${MAPPING_PID}"
-MAPPING_PID=""
 stop_process "${SIM_PID}"
 SIM_PID=""
 stop_sim_stack
 sleep 3
 
-log "starting headless Gazebo from waypoint A for pure localization"
-setsid ros2 launch sim sim_world.launch.py x:="${A_X}" y:="${A_Y}" yaw:="${A_YAW}" use_sim_time:=true \
-  >"${LOG_DIR}/sim_navigation.log" 2>&1 &
+log "starting point navigation workflow from waypoint A for pure localization"
+setsid ros2 launch sim sim_point_navigation.launch.py \
+  x:="${A_X}" y:="${A_Y}" yaw:="${A_YAW}" \
+  headless:=true \
+  use_rviz:=false \
+  use_voice:=false \
+  map:="${MAP_PREFIX}.yaml" \
+  pbstream:="${PBSTREAM}" \
+  >"${LOG_DIR}/sim_point_navigation.log" 2>&1 &
 SIM_PID=$!
 wait_for_topic /clock 45
 wait_for_topic /scan 60
@@ -209,20 +207,6 @@ wait_for_topic_msg /scan 30 scan_navigation.log
 wait_for_topic_msg /imu/data 30 imu_navigation.log
 wait_for_service /unpause_physics 30
 ros2 service call /unpause_physics std_srvs/srv/Empty '{}' >"${LOG_DIR}/unpause_navigation.log" 2>&1 || true
-
-log "starting navigation with Cartographer pure localization and Theta* planner"
-setsid ros2 launch navigation navigation.launch.py \
-  use_sim_time:=true \
-  use_rviz:=false \
-  use_lidar_driver:=false \
-  publish_static_laser_tf:=false \
-  configuration_basename:=sim_2d_localization.lua \
-  map:="${MAP_PREFIX}.yaml" \
-  pbstream:="${PBSTREAM}" \
-  scan_topic:=/scan \
-  imu_topic:=/imu/data \
-  >"${LOG_DIR}/navigation.log" 2>&1 &
-NAV_PID=$!
 
 wait_for_service /planner_server/get_state 90
 wait_for_lifecycle_active planner_server 90

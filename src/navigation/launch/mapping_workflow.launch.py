@@ -1,0 +1,116 @@
+import os
+
+from ament_index_python.packages import get_package_share_directory
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
+from launch.launch_description_sources import PythonLaunchDescriptionSource
+from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
+
+
+def generate_launch_description():
+    navigation_dir = get_package_share_directory("navigation")
+    cartographer_dir = get_package_share_directory("cartographer_config")
+    mapping_launch = os.path.join(
+        cartographer_dir,
+        "launch",
+        "cartographer_mapping.launch.py",
+    )
+    default_rviz_config = os.path.join(
+        navigation_dir,
+        "rviz",
+        "mapping_workflow.rviz",
+    )
+    default_maps_dir = os.path.expanduser("~/.ros/wheel_robot_maps")
+
+    map_name = LaunchConfiguration("map_name")
+    maps_dir = LaunchConfiguration("maps_dir")
+    use_sim_time = LaunchConfiguration("use_sim_time")
+    use_rviz = LaunchConfiguration("use_rviz")
+    rviz_config = LaunchConfiguration("rviz_config")
+    use_voice = LaunchConfiguration("use_voice")
+    use_lidar_driver = LaunchConfiguration("use_lidar_driver")
+    scan_topic = LaunchConfiguration("scan_topic")
+    imu_topic = LaunchConfiguration("imu_topic")
+    configuration_basename = LaunchConfiguration("configuration_basename")
+    publish_static_laser_tf = LaunchConfiguration("publish_static_laser_tf")
+
+    configured_nodes = ["map_saver"]
+
+    return LaunchDescription([
+        DeclareLaunchArgument("map_name", default_value="default"),
+        DeclareLaunchArgument("maps_dir", default_value=default_maps_dir),
+        DeclareLaunchArgument("use_sim_time", default_value="false"),
+        DeclareLaunchArgument("use_rviz", default_value="true"),
+        DeclareLaunchArgument("rviz_config", default_value=default_rviz_config),
+        DeclareLaunchArgument("use_voice", default_value="true"),
+        DeclareLaunchArgument("use_lidar_driver", default_value="true"),
+        DeclareLaunchArgument("scan_topic", default_value="/scan"),
+        DeclareLaunchArgument("imu_topic", default_value="/imu/data"),
+        DeclareLaunchArgument("configuration_basename", default_value="n10p_2d.lua"),
+        DeclareLaunchArgument("publish_static_laser_tf", default_value="true"),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(mapping_launch),
+            launch_arguments={
+                "use_sim_time": use_sim_time,
+                "use_rviz": "false",
+                "use_lidar_driver": use_lidar_driver,
+                "scan_topic": scan_topic,
+                "imu_topic": imu_topic,
+                "configuration_basename": configuration_basename,
+                "publish_static_laser_tf": publish_static_laser_tf,
+            }.items(),
+        ),
+        Node(
+            package="nav2_map_server",
+            executable="map_saver_server",
+            name="map_saver",
+            output="screen",
+            parameters=[{"use_sim_time": use_sim_time}],
+        ),
+        Node(
+            package="nav2_lifecycle_manager",
+            executable="lifecycle_manager",
+            name="lifecycle_manager_map_saver",
+            output="screen",
+            parameters=[
+                {
+                    "use_sim_time": use_sim_time,
+                    "autostart": True,
+                    "node_names": configured_nodes,
+                },
+            ],
+        ),
+        Node(
+            package="cartographer_config",
+            executable="cartographer_save_map.py",
+            name="cartographer_save_map",
+            output="screen",
+            parameters=[
+                {
+                    "use_sim_time": use_sim_time,
+                    "maps_dir": maps_dir,
+                    "map_name": map_name,
+                    "write_state_service": "/write_state",
+                    "save_map_service": "/map_saver/save_map",
+                    "map_topic": "/map",
+                },
+            ],
+        ),
+        Node(
+            package="voice_command_bridge",
+            executable="voice_command_bridge_node",
+            name="voice_command_bridge_node",
+            output="screen",
+            condition=IfCondition(use_voice),
+        ),
+        Node(
+            package="rviz2",
+            executable="rviz2",
+            name="rviz2_mapping_workflow",
+            output="screen",
+            arguments=["-d", rviz_config],
+            condition=IfCondition(use_rviz),
+        ),
+    ])

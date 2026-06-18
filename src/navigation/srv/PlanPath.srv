@@ -1,0 +1,11 @@
+# 路径规划服务接口。
+# use_current_start 为 true 时忽略 start 字段，使用当前机器人位姿作为起点。
+# waypoints 为途径点列表，按顺序经过。
+bool use_current_start
+geometry_msgs/PoseStamped start
+geometry_msgs/PoseStamped goal
+geometry_msgs/PoseStamped[] waypoints
+---
+nav_msgs/Path path
+bool success
+string message
