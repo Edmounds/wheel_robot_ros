@@ -1,0 +1,6 @@
+voice_command_bridge_node:
+  ros__parameters:
+    websocket_enabled: true
+    websocket_host: "192.168.233.246"
+    websocket_port: 11451
+    websocket_bind_retry_sec: 1.0

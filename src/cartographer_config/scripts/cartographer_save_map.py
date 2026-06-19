@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 import rclpy
+from ament_index_python.packages import get_package_share_directory
 from cartographer_ros_msgs.srv import WriteState
 from nav2_msgs.srv import SaveMap
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -19,12 +20,26 @@ def sanitize_name(name: str) -> str:
     return sanitized or "map"
 
 
+def package_data_dir(package_name: str, relative_dir: str) -> Path:
+    package_share = Path(get_package_share_directory(package_name))
+    workspace_root = package_share.parents[3]
+    candidates = (
+        workspace_root / package_name / relative_dir,
+        workspace_root / "src" / package_name / relative_dir,
+        package_share / relative_dir,
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return package_share / relative_dir
+
+
 class CartographerSaveMap(Node):
     def __init__(self) -> None:
         super().__init__("cartographer_save_map")
         self.callback_group = ReentrantCallbackGroup()
 
-        self.declare_parameter("maps_dir", "~/.ros/wheel_robot_maps")
+        self.declare_parameter("maps_dir", str(package_data_dir("navigation", "map")))
         self.declare_parameter("map_name", "default")
         self.declare_parameter("write_state_service", "/write_state")
         self.declare_parameter("save_map_service", "/map_saver/save_map")
@@ -126,10 +141,13 @@ def main() -> None:
     executor.add_node(node)
     try:
         executor.spin()
+    except KeyboardInterrupt:
+        pass
     finally:
         executor.shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -13,6 +13,9 @@ import os
 def generate_launch_description():
 
     use_rviz = LaunchConfiguration('use_rviz')
+    serial_port = LaunchConfiguration('serial_port')
+    scan_topic = LaunchConfiguration('scan_topic')
+    frame_id = LaunchConfiguration('frame_id')
     driver_dir = os.path.join(get_package_share_directory('lslidar_driver'), 'params', 'lsx10.yaml')
                      
     driver_node = LifecycleNode(package='lslidar_driver',
@@ -21,7 +24,14 @@ def generate_launch_description():
                                 output='screen',
                                 emulate_tty=True,
                                 namespace='',
-                                parameters=[driver_dir],
+                                parameters=[
+                                    driver_dir,
+                                    {
+                                        'serial_port_': serial_port,
+                                        'scan_topic': scan_topic,
+                                        'frame_id': frame_id,
+                                    },
+                                ],
                                 )
 
 
@@ -38,6 +48,9 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument('use_rviz', default_value='true'),
+        DeclareLaunchArgument('serial_port', default_value='/dev/ttyACM0'),
+        DeclareLaunchArgument('scan_topic', default_value='/scan'),
+        DeclareLaunchArgument('frame_id', default_value='laser_link'),
         driver_node,
         rviz_node,
     ])

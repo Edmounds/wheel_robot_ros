@@ -123,6 +123,7 @@ def _emit_debug_info(context):
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic").perform(context)
     use_joy_node = LaunchConfiguration("use_joy_node").perform(context)
     joy_executable = LaunchConfiguration("joy_executable").perform(context)
+    require_enable_button = LaunchConfiguration("require_enable_button").perform(context)
     enable_button = LaunchConfiguration("enable_button").perform(context)
     turbo_button = LaunchConfiguration("turbo_button").perform(context)
     linear_axis = LaunchConfiguration("linear_axis").perform(context)
@@ -132,7 +133,8 @@ def _emit_debug_info(context):
         "===== xbox_teleop debug info =====",
         f"launch args: use_joy_node={use_joy_node} joy_executable={joy_executable} joy_dev={joy_dev} "
         f"joy_topic={joy_topic} cmd_vel_topic={cmd_vel_topic}",
-        f"teleop mapping: enable_button={enable_button} turbo_button={turbo_button} "
+        f"teleop mapping: require_enable_button={require_enable_button} "
+        f"enable_button={enable_button} turbo_button={turbo_button} "
         f"linear_axis={linear_axis} angular_axis={angular_axis}",
         f"joy_dev exists: {os.path.exists(joy_dev)}",
         f"joy executable: {_ros2_executable_summary('joy', joy_executable)}",
@@ -159,6 +161,7 @@ def generate_launch_description():
     joy_dev = LaunchConfiguration("joy_dev")
     joy_topic = LaunchConfiguration("joy_topic")
     cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
+    require_enable_button = LaunchConfiguration("require_enable_button")
     enable_button = LaunchConfiguration("enable_button")
     turbo_button = LaunchConfiguration("turbo_button")
     linear_axis = LaunchConfiguration("linear_axis")
@@ -169,16 +172,17 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument("config_file", default_value=default_config),
-        DeclareLaunchArgument("debug_info", default_value="true"),
+        DeclareLaunchArgument("debug_info", default_value="false"),
         DeclareLaunchArgument("use_joy_node", default_value="true"),
         DeclareLaunchArgument("joy_executable", default_value="joy_node"),
         DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
         DeclareLaunchArgument("joy_topic", default_value="/joy"),
         DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel"),
+        DeclareLaunchArgument("require_enable_button", default_value="false"),
         DeclareLaunchArgument("enable_button", default_value="5"),
         DeclareLaunchArgument("turbo_button", default_value="4"),
         DeclareLaunchArgument("linear_axis", default_value="1"),
-        DeclareLaunchArgument("angular_axis", default_value="3"),
+        DeclareLaunchArgument("angular_axis", default_value="2"),
         DeclareLaunchArgument("deadzone", default_value="0.05"),
         DeclareLaunchArgument("autorepeat_rate", default_value="30.0"),
         DeclareLaunchArgument("coalesce_interval_ms", default_value="1"),
@@ -212,6 +216,7 @@ def generate_launch_description():
                 {
                     "joy_topic": joy_topic,
                     "cmd_vel_topic": cmd_vel_topic,
+                    "require_enable_button": require_enable_button,
                     "enable_button": enable_button,
                     "turbo_button": turbo_button,
                     "linear_axis": linear_axis,

@@ -5,6 +5,8 @@ Panels:
     Expanded:
       - /Nav2 Goal1
     Name: Tool Properties
+  - Class: nav2_rviz_plugins/Navigation 2
+    Name: Navigation 2
 Visualization Manager:
   Class: ""
   Displays:
@@ -34,6 +36,48 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /map
+      Use Timestamp: false
+      Value: true
+    - Alpha: 0.45
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Draw Behind: false
+      Enabled: true
+      Name: Global Costmap
+      Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /global_costmap/costmap
+      Update Topic:
+        Depth: 5
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /global_costmap/costmap_updates
+      Use Timestamp: false
+      Value: true
+    - Alpha: 0.45
+      Class: rviz_default_plugins/Map
+      Color Scheme: costmap
+      Draw Behind: false
+      Enabled: true
+      Name: Local Costmap
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        Filter size: 10
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_costmap/costmap
+      Update Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /local_costmap/costmap_updates
       Use Timestamp: false
       Value: true
     - Alpha: 1

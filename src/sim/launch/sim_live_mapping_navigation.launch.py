@@ -3,7 +3,6 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
-from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 
@@ -25,14 +24,15 @@ def package_data_dir(package_name, relative_dir):
 def generate_launch_description():
     sim_dir = get_package_share_directory("sim")
     navigation_dir = get_package_share_directory("navigation")
-    xbox_teleop_dir = get_package_share_directory("xbox_teleop")
     sim_world_launch = os.path.join(sim_dir, "launch", "sim_world.launch.py")
-    mapping_launch = os.path.join(navigation_dir, "launch", "mapping_workflow.launch.py")
-    xbox_teleop_launch = os.path.join(xbox_teleop_dir, "launch", "xbox_series_teleop.launch.py")
+    live_navigation_launch = os.path.join(
+        navigation_dir,
+        "launch",
+        "live_mapping_navigation.launch.py",
+    )
     default_world = os.path.join(sim_dir, "worlds", "ab_navigation.world")
-    default_rviz_config = os.path.join(navigation_dir, "rviz", "sim_mapping_workflow.rviz")
-    default_xbox_config = os.path.join(xbox_teleop_dir, "config", "xbox_series_teleop.yaml")
     default_maps_dir = package_data_dir("navigation", "map")
+    default_rviz_config = os.path.join(navigation_dir, "rviz", "point_navigation.rviz")
 
     world = LaunchConfiguration("world")
     headless = LaunchConfiguration("headless")
@@ -49,13 +49,6 @@ def generate_launch_description():
     voice_websocket_enabled = LaunchConfiguration("voice_websocket_enabled")
     voice_websocket_host = LaunchConfiguration("voice_websocket_host")
     voice_websocket_port = LaunchConfiguration("voice_websocket_port")
-    use_xbox_teleop = LaunchConfiguration("use_xbox_teleop")
-    xbox_config_file = LaunchConfiguration("xbox_config_file")
-    joy_dev = LaunchConfiguration("joy_dev")
-    joy_topic = LaunchConfiguration("joy_topic")
-    cmd_vel_topic = LaunchConfiguration("cmd_vel_topic")
-    linear_axis = LaunchConfiguration("linear_axis")
-    angular_axis = LaunchConfiguration("angular_axis")
 
     return LaunchDescription([
         DeclareLaunchArgument("world", default_value=default_world),
@@ -65,7 +58,7 @@ def generate_launch_description():
         DeclareLaunchArgument("y", default_value="-1.4"),
         DeclareLaunchArgument("z", default_value="0.08"),
         DeclareLaunchArgument("yaw", default_value="0.0"),
-        DeclareLaunchArgument("map_name", default_value="sim_lab"),
+        DeclareLaunchArgument("map_name", default_value="live_sim_map"),
         DeclareLaunchArgument("maps_dir", default_value=default_maps_dir),
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument("rviz_config", default_value=default_rviz_config),
@@ -73,13 +66,6 @@ def generate_launch_description():
         DeclareLaunchArgument("voice_websocket_enabled", default_value="true"),
         DeclareLaunchArgument("voice_websocket_host", default_value="0.0.0.0"),
         DeclareLaunchArgument("voice_websocket_port", default_value="8765"),
-        DeclareLaunchArgument("use_xbox_teleop", default_value="true"),
-        DeclareLaunchArgument("xbox_config_file", default_value=default_xbox_config),
-        DeclareLaunchArgument("joy_dev", default_value="/dev/input/js0"),
-        DeclareLaunchArgument("joy_topic", default_value="/joy"),
-        DeclareLaunchArgument("cmd_vel_topic", default_value="/cmd_vel"),
-        DeclareLaunchArgument("linear_axis", default_value="1"),
-        DeclareLaunchArgument("angular_axis", default_value="2"),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sim_world_launch),
             launch_arguments={
@@ -94,7 +80,7 @@ def generate_launch_description():
             }.items(),
         ),
         IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(mapping_launch),
+            PythonLaunchDescriptionSource(live_navigation_launch),
             launch_arguments={
                 "map_name": map_name,
                 "maps_dir": maps_dir,
@@ -110,18 +96,6 @@ def generate_launch_description():
                 "imu_topic": "/imu/data",
                 "configuration_basename": "sim_2d.lua",
                 "publish_static_laser_tf": "false",
-            }.items(),
-        ),
-        IncludeLaunchDescription(
-            PythonLaunchDescriptionSource(xbox_teleop_launch),
-            condition=IfCondition(use_xbox_teleop),
-            launch_arguments={
-                "config_file": xbox_config_file,
-                "joy_dev": joy_dev,
-                "joy_topic": joy_topic,
-                "cmd_vel_topic": cmd_vel_topic,
-                "linear_axis": linear_axis,
-                "angular_axis": angular_axis,
             }.items(),
         ),
     ])

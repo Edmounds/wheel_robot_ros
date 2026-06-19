@@ -1,12 +1,13 @@
 gesture_control_node:
   ros__parameters:
-    camera_path: "0"
+    camera_path: "/dev/video2"
     backend: "qnn"
     qualcomm_assets_dir: ""
     qualcomm_model_dir: ""
     detection_model: "m_handDetctor_w8a8.qnn216.ctx.bin"
     landmark_model: "m_handLandmark_w8a8.qnn216.ctx.bin"
     anchors_file: "anchors_palm.npy"
+    min_detection_score: 0.75
     min_hand_score: 0.4
 
     cmd_vel_topic: "/cmd_vel"
@@ -17,15 +18,10 @@ gesture_control_node:
     gesture_event_cooldown_sec: 1.2
     lost_hand_timeout_sec: 0.5
 
-    center_x: 0.5
-    center_y: 0.5
-    follow_deadband_x: 0.08
-    follow_deadband_y: 0.10
-    follow_linear_gain: 0.35
-    follow_angular_gain: 0.9
     max_linear_speed: 0.20
     max_angular_speed: 0.60
     forward_speed: 0.15
+    turn_angular_speed: 0.45
 
     fail_on_backend_error: false
     show_debug_image: false

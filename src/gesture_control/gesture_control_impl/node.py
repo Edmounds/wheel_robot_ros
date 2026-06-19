@@ -27,13 +27,14 @@ class GestureControlNode(Node):
     def __init__(self) -> None:
         super().__init__("gesture_control_node")
 
-        self.declare_parameter("camera_path", "0")
+        self.declare_parameter("camera_path", "/dev/video2")
         self.declare_parameter("backend", "qnn")
         self.declare_parameter("qualcomm_assets_dir", "")
         self.declare_parameter("qualcomm_model_dir", "")
         self.declare_parameter("detection_model", "m_handDetctor_w8a8.qnn216.ctx.bin")
         self.declare_parameter("landmark_model", "m_handLandmark_w8a8.qnn216.ctx.bin")
         self.declare_parameter("anchors_file", "anchors_palm.npy")
+        self.declare_parameter("min_detection_score", 0.75)
         self.declare_parameter("min_hand_score", 0.4)
         self.declare_parameter("cmd_vel_topic", "/cmd_vel")
         self.declare_parameter("height_service_name", "/gesture_control/set_body_height")
@@ -41,15 +42,10 @@ class GestureControlNode(Node):
         self.declare_parameter("gesture_stable_frames", 4)
         self.declare_parameter("gesture_event_cooldown_sec", 1.2)
         self.declare_parameter("lost_hand_timeout_sec", 0.5)
-        self.declare_parameter("center_x", 0.5)
-        self.declare_parameter("center_y", 0.5)
-        self.declare_parameter("follow_deadband_x", 0.08)
-        self.declare_parameter("follow_deadband_y", 0.10)
-        self.declare_parameter("follow_linear_gain", 0.35)
-        self.declare_parameter("follow_angular_gain", 0.9)
         self.declare_parameter("max_linear_speed", 0.20)
         self.declare_parameter("max_angular_speed", 0.60)
         self.declare_parameter("forward_speed", 0.15)
+        self.declare_parameter("turn_angular_speed", 0.45)
         self.declare_parameter("fail_on_backend_error", False)
         self.declare_parameter("show_debug_image", False)
 
@@ -68,6 +64,7 @@ class GestureControlNode(Node):
         )
         self._last_event_times: dict[str, float] = {}
         self._last_seen_hand_time = time.monotonic()
+        self._last_stable_gesture: Optional[str] = None
         self._active_mode = "stop"
         self._backend = None
         self._capture = None
@@ -114,6 +111,7 @@ class GestureControlNode(Node):
             detection_model=str(self.get_parameter("detection_model").value),
             landmark_model=str(self.get_parameter("landmark_model").value),
             anchors_file=str(self.get_parameter("anchors_file").value),
+            min_detection_score=float(self.get_parameter("min_detection_score").value),
             min_hand_score=float(self.get_parameter("min_hand_score").value),
         )
 
@@ -154,7 +152,7 @@ class GestureControlNode(Node):
             hands = self._backend.detect(frame)
         except Exception as exc:  # noqa: BLE001 - keep robot control node alive.
             self.get_logger().error(f"gesture detection failed: {exc}")
-            self._publish_stop()
+            self._enter_stop(clear_gesture=True)
             return
 
         if not hands:
@@ -165,7 +163,7 @@ class GestureControlNode(Node):
         hand = max(hands, key=lambda item: item.score)
         self._last_seen_hand_time = time.monotonic()
         decision = self._stable_gesture(hand.gesture)
-        self._apply_control(hand, decision)
+        self._apply_control(decision)
         self._show_debug(frame, hand)
 
     def _stable_gesture(self, gesture: str) -> GestureDecision:
@@ -175,24 +173,18 @@ class GestureControlNode(Node):
         stable = all(item == gesture for item in self._gesture_history)
         return GestureDecision(gesture=gesture, stable=stable)
 
-    def _apply_control(self, hand: HandState, decision: GestureDecision) -> None:
+    def _apply_control(self, decision: GestureDecision) -> None:
         gesture = decision.gesture
 
-        if gesture == "Closed_Fist":
-            self._active_mode = "follow"
-            self._publish_follow(hand)
+        if not decision.stable:
+            self._publish_active_mode()
             return
 
-        if not decision.stable:
-            if self._active_mode == "forward":
-                self._publish_forward()
-            elif self._active_mode == "follow":
-                self._publish_follow(hand)
-            return
+        previous_stable_gesture = self._last_stable_gesture
+        self._last_stable_gesture = gesture
 
         if gesture == "Open_Palm":
-            self._active_mode = "stop"
-            self._publish_stop()
+            self._enter_stop()
             return
 
         if gesture == "Pointing_Up":
@@ -200,74 +192,78 @@ class GestureControlNode(Node):
             self._publish_forward()
             return
 
+        if gesture == "Closed_Fist":
+            self._active_mode = "turn"
+            self._publish_turn()
+            return
+
         if gesture == "Thumb_Up":
-            self._call_height_service(1, gesture)
-            self._active_mode = "stop"
-            self._publish_stop()
+            if previous_stable_gesture != gesture:
+                self._call_height_service(1, gesture)
+            self._enter_stop()
             return
 
         if gesture == "Victory":
-            self._call_height_service(0, gesture)
-            self._active_mode = "stop"
-            self._publish_stop()
+            if previous_stable_gesture != gesture:
+                self._call_height_service(0, gesture)
+            self._enter_stop()
             return
 
+        self._publish_active_mode()
+
+    def _publish_active_mode(self) -> None:
         if self._active_mode == "forward":
             self._publish_forward()
-        elif self._active_mode == "follow":
-            self._publish_follow(hand)
-
-    def _publish_follow(self, hand: HandState) -> None:
-        center_x = float(self.get_parameter("center_x").value)
-        center_y = float(self.get_parameter("center_y").value)
-        error_x = hand.wrist_x - center_x
-        error_y = center_y - hand.wrist_y
-
-        if abs(error_x) < float(self.get_parameter("follow_deadband_x").value):
-            error_x = 0.0
-        if abs(error_y) < float(self.get_parameter("follow_deadband_y").value):
-            error_y = 0.0
-
-        twist = Twist()
-        twist.linear.x = self._clamp(
-            error_y * float(self.get_parameter("follow_linear_gain").value),
-            -float(self.get_parameter("max_linear_speed").value),
-            float(self.get_parameter("max_linear_speed").value),
-        )
-        twist.angular.z = self._clamp(
-            -error_x * float(self.get_parameter("follow_angular_gain").value),
-            -float(self.get_parameter("max_angular_speed").value),
-            float(self.get_parameter("max_angular_speed").value),
-        )
-        self._cmd_vel_pub.publish(twist)
+        elif self._active_mode == "turn":
+            self._publish_turn()
 
     def _publish_forward(self) -> None:
         twist = Twist()
-        twist.linear.x = float(self.get_parameter("forward_speed").value)
+        max_linear_speed = abs(float(self.get_parameter("max_linear_speed").value))
+        twist.linear.x = self._clamp(
+            float(self.get_parameter("forward_speed").value),
+            -max_linear_speed,
+            max_linear_speed,
+        )
+        self._cmd_vel_pub.publish(twist)
+
+    def _publish_turn(self) -> None:
+        twist = Twist()
+        max_angular_speed = abs(float(self.get_parameter("max_angular_speed").value))
+        twist.angular.z = self._clamp(
+            float(self.get_parameter("turn_angular_speed").value),
+            -max_angular_speed,
+            max_angular_speed,
+        )
         self._cmd_vel_pub.publish(twist)
 
     def _publish_stop(self) -> None:
         self._cmd_vel_pub.publish(Twist())
 
+    def _enter_stop(self, clear_gesture: bool = False) -> None:
+        self._active_mode = "stop"
+        if clear_gesture:
+            self._gesture_history.clear()
+            self._last_stable_gesture = None
+        self._publish_stop()
+
     def _stop_if_hand_lost(self) -> None:
         timeout = float(self.get_parameter("lost_hand_timeout_sec").value)
         if time.monotonic() - self._last_seen_hand_time >= timeout:
-            self._active_mode = "stop"
-            self._publish_stop()
+            self._enter_stop(clear_gesture=True)
 
     def _call_height_service(self, command: int, gesture: str) -> None:
         now = time.monotonic()
         cooldown = float(self.get_parameter("gesture_event_cooldown_sec").value)
         if now - self._last_event_times.get(gesture, 0.0) < cooldown:
             return
-        self._last_event_times[gesture] = now
-
         if not self._height_client.service_is_ready():
             self.get_logger().warn(
                 f"height service is not ready: {self.get_parameter('height_service_name').value}"
             )
             return
 
+        self._last_event_times[gesture] = now
         request = SetBodyHeight.Request()
         request.command = int(command)
         future = self._height_client.call_async(request)

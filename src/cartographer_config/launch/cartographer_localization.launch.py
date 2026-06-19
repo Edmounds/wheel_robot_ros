@@ -37,6 +37,7 @@ def generate_launch_description():
     laser_pitch = LaunchConfiguration("laser_pitch")
     laser_roll = LaunchConfiguration("laser_roll")
     lidar_use_rviz = LaunchConfiguration("lidar_use_rviz")
+    lidar_serial_port = LaunchConfiguration("lidar_serial_port")
 
     return LaunchDescription([
         DeclareLaunchArgument(
@@ -111,6 +112,10 @@ def generate_launch_description():
             "lidar_use_rviz",
             default_value="false",
         ),
+        DeclareLaunchArgument(
+            "lidar_serial_port",
+            default_value="/dev/ttyACM0",
+        ),
         Node(
             package="tf2_ros",
             executable="static_transform_publisher",
@@ -138,7 +143,12 @@ def generate_launch_description():
         ),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(lslidar_launch),
-            launch_arguments={"use_rviz": lidar_use_rviz}.items(),
+            launch_arguments={
+                "use_rviz": lidar_use_rviz,
+                "serial_port": lidar_serial_port,
+                "scan_topic": scan_topic,
+                "frame_id": laser_frame,
+            }.items(),
             condition=IfCondition(use_lidar_driver),
         ),
         Node(

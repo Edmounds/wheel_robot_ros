@@ -17,12 +17,12 @@ public:
   {
     joy_topic_ = declare_parameter<std::string>("joy_topic", "/joy");
     cmd_vel_topic_ = declare_parameter<std::string>("cmd_vel_topic", "/cmd_vel");
-    require_enable_button_ = declare_parameter<bool>("require_enable_button", true);
+    require_enable_button_ = declare_parameter<bool>("require_enable_button", false);
     enable_button_ = declare_parameter<int>("enable_button", 5);
     turbo_button_ = declare_parameter<int>("turbo_button", 4);
     linear_axis_ = declare_parameter<int>("linear_axis", 1);
-    angular_axis_ = declare_parameter<int>("angular_axis", 3);
-    deadzone_ = declare_parameter<double>("deadzone", 0.08);
+    angular_axis_ = declare_parameter<int>("angular_axis", 2);
+    deadzone_ = declare_parameter<double>("deadzone", 0.20);
     normal_linear_scale_ = declare_parameter<double>("normal_linear_scale", 0.35);
     normal_angular_scale_ = declare_parameter<double>("normal_angular_scale", 0.9);
     turbo_linear_scale_ = declare_parameter<double>("turbo_linear_scale", 0.7);
@@ -45,11 +45,19 @@ public:
       std::chrono::duration_cast<std::chrono::nanoseconds>(period),
       std::bind(&XboxSeriesTeleopNode::publishTwist, this));
 
-    RCLCPP_INFO(
-      get_logger(),
-      "Xbox Series teleop ready: joy=%s cmd_vel=%s enable=button[%d] turbo=button[%d]. "
-      "Hold the enable button and move the sticks to publish velocity.",
-      joy_topic_.c_str(), cmd_vel_topic_.c_str(), enable_button_, turbo_button_);
+    if (require_enable_button_) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Xbox Series teleop ready: joy=%s cmd_vel=%s enable=button[%d] turbo=button[%d]. "
+        "Hold the enable button and move the sticks to publish velocity.",
+        joy_topic_.c_str(), cmd_vel_topic_.c_str(), enable_button_, turbo_button_);
+    } else {
+      RCLCPP_INFO(
+        get_logger(),
+        "Xbox Series teleop ready: joy=%s cmd_vel=%s enable=always turbo=button[%d]. "
+        "Move the sticks to publish velocity.",
+        joy_topic_.c_str(), cmd_vel_topic_.c_str(), turbo_button_);
+    }
   }
 
 private:
@@ -115,12 +123,18 @@ private:
     last_joy_time_ = now();
     have_joy_ = true;
 
-    if (first_joy) {
+    if (first_joy && require_enable_button_) {
       RCLCPP_INFO(
         get_logger(),
         "Received first Joy message: axes=%zu buttons=%zu pressed_buttons=%s. "
         "Waiting for enable button[%d].",
         msg->axes.size(), msg->buttons.size(), pressedButtons(*msg).c_str(), enable_button_);
+    } else if (first_joy) {
+      RCLCPP_INFO(
+        get_logger(),
+        "Received first Joy message: axes=%zu buttons=%zu pressed_buttons=%s. "
+        "Teleop is active without an enable button.",
+        msg->axes.size(), msg->buttons.size(), pressedButtons(*msg).c_str());
     }
 
     const bool enabled = !require_enable_button_ || buttonPressed(*msg, enable_button_);
@@ -139,7 +153,7 @@ private:
       return;
     }
 
-    if (!was_enabled_) {
+    if (require_enable_button_ && !was_enabled_) {
       RCLCPP_INFO(get_logger(), "Enable button pressed; teleop active.");
     }
     was_enabled_ = true;
@@ -182,7 +196,7 @@ private:
     }
 
     cmd_vel_pub_->publish(active_twist_);
-    RCLCPP_INFO_THROTTLE(
+    RCLCPP_DEBUG_THROTTLE(
       get_logger(), *get_clock(), 1000,
       "Publishing /cmd_vel: linear.x=%.3f angular.z=%.3f",
       active_twist_.linear.x, active_twist_.angular.z);

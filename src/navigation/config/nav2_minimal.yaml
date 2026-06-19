@@ -54,14 +54,14 @@ controller_server:
     # Regulated Pure Pursuit：跟踪 Theta* 全局路径，适合低速差速底盘验证。
     FollowPath:
       plugin: "nav2_regulated_pure_pursuit_controller::RegulatedPurePursuitController"
-      desired_linear_vel: 0.16
+      desired_linear_vel: 0.25
       lookahead_dist: 0.35
       min_lookahead_dist: 0.20
       max_lookahead_dist: 0.55
       lookahead_time: 1.0
       use_velocity_scaled_lookahead_dist: false
-      rotate_to_heading_angular_vel: 0.45
-      max_angular_accel: 1.0
+      rotate_to_heading_angular_vel: 0.70
+      max_angular_accel: 2.0
       transform_tolerance: 0.3
       use_rotate_to_heading: true
       rotate_to_heading_min_angle: 0.785

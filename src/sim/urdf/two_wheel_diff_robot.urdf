@@ -142,7 +142,7 @@
   <joint name="laser_joint" type="fixed">
     <parent link="base_link"/>
     <child link="laser_link"/>
-    <origin xyz="0.14 0 0.16" rpy="0 0 0"/>
+    <origin xyz="-0.063138 0 0" rpy="3.14159265359 0 3.14159265359"/>
   </joint>
 
   <link name="imu_link">
@@ -284,7 +284,7 @@
       <wheel_diameter>0.13</wheel_diameter>
       <max_wheel_torque>20</max_wheel_torque>
       <max_wheel_acceleration>4.0</max_wheel_acceleration>
-      <publish_odom>true</publish_odom>
+      <publish_odom>false</publish_odom>
       <publish_odom_tf>false</publish_odom_tf>
       <publish_wheel_tf>false</publish_wheel_tf>
       <odometry_frame>odom</odometry_frame>

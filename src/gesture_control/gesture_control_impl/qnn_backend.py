@@ -16,6 +16,7 @@ class QualcommHandBackend:
         detection_model: str,
         landmark_model: str,
         anchors_file: str,
+        min_detection_score: float,
         min_hand_score: float,
     ) -> None:
         self._model_dir = Path(model_dir).expanduser()
@@ -23,6 +24,7 @@ class QualcommHandBackend:
         self._detection_model = self._model_dir / detection_model
         self._landmark_model = self._model_dir / landmark_model
         self._anchors_file = self._assets_dir / anchors_file
+        self._min_detection_score = min_detection_score
         self._min_hand_score = min_hand_score
 
         self._cv2 = None
@@ -40,7 +42,12 @@ class QualcommHandBackend:
         self._check_files()
         self._import_runtime()
 
-        self._post_process = _PostMediaPipeHand(self._cv2, self._np, self._torch)
+        self._post_process = _PostMediaPipeHand(
+            self._cv2,
+            self._np,
+            self._torch,
+            min_score_thresh=self._min_detection_score,
+        )
         self._anchors = self._torch.tensor(
             self._np.load(str(self._anchors_file)),
             dtype=self._torch.float32,
@@ -235,7 +242,7 @@ class _QnnModel:
 
 
 class _PostMediaPipeHand:
-    def __init__(self, cv2, np, torch) -> None:
+    def __init__(self, cv2, np, torch, min_score_thresh: float = 0.75) -> None:
         self._cv2 = cv2
         self._np = np
         self._torch = torch
@@ -252,7 +259,7 @@ class _PostMediaPipeHand:
         self.num_classes = 1
         self.num_anchors = 2944
         self.num_coords = 18
-        self.min_score_thresh = 0.75
+        self.min_score_thresh = min_score_thresh
         self.score_clipping_thresh = 100.0
         self.min_suppression_threshold = 0.3
         self.resolution = 256

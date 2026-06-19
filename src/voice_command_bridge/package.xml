@@ -19,7 +19,9 @@
   <depend>nav2_msgs</depend>
   <depend>navigation</depend>
   <depend>rclcpp_action</depend>
+  <depend>ament_index_cpp</depend>
   <depend>yaml-cpp</depend>
+  <depend>boost</depend>
 
   <build_depend>rosidl_default_generators</build_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>

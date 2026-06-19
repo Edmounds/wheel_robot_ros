@@ -2,12 +2,12 @@ xbox_series_teleop_node:
   ros__parameters:
     joy_topic: /joy
     cmd_vel_topic: /cmd_vel
-    require_enable_button: true
-    enable_button: 5      # RB
+    require_enable_button: false
+    enable_button: 5      # RB, only used when require_enable_button is true
     turbo_button: 4       # LB
     linear_axis: 1        # Left stick vertical
-    angular_axis: 3       # Right stick horizontal
-    deadzone: 0.08
+    angular_axis: 2       # Right stick horizontal
+    deadzone: 0.20
     normal_linear_scale: 0.35
     normal_angular_scale: 0.9
     turbo_linear_scale: 0.7

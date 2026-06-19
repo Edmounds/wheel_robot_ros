@@ -25,7 +25,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "camera_path",
-                default_value="0",
+                default_value="/dev/video2",
                 description="OpenCV camera path or index.",
             ),
             DeclareLaunchArgument(

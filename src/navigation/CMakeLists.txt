@@ -138,7 +138,7 @@ install(DIRECTORY include/
 )
 
 install(
-  DIRECTORY config launch missions rviz
+  DIRECTORY config launch map missions rviz
   DESTINATION share/${PROJECT_NAME}
 )
 

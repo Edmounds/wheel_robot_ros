@@ -1,16 +1,29 @@
 #include <chrono>
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <future>
+#include <iomanip>
 #include <memory>
 #include <mutex>
+#include <set>
+#include <sstream>
 #include <string>
+#include <thread>
+#include <vector>
 
+#include <boost/asio.hpp>
+#include <boost/beast/core.hpp>
+#include <boost/beast/websocket.hpp>
+#include <boost/system/error_code.hpp>
+#include <ament_index_cpp/get_package_share_directory.hpp>
+#include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/twist.hpp>
 #include <rcl_interfaces/srv/set_parameters.hpp>
+#include <nav2_msgs/action/navigate_through_poses.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <navigation/srv/save_mission.hpp>
 #include <rclcpp/executors/multi_threaded_executor.hpp>
@@ -27,6 +40,11 @@
 namespace
 {
 constexpr double kPi = 3.14159265358979323846;
+
+namespace asio = boost::asio;
+namespace beast = boost::beast;
+namespace websocket = beast::websocket;
+using tcp = asio::ip::tcp;
 
 std::string expand_user_path(const std::string & path)
 {
@@ -48,6 +66,34 @@ std::string expand_user_path(const std::string & path)
   return path;
 }
 
+std::filesystem::path package_workspace_root(const std::filesystem::path & package_share)
+{
+  return package_share.parent_path().parent_path().parent_path().parent_path();
+}
+
+std::string default_waypoints_file()
+{
+  try {
+    const auto package_share = std::filesystem::path(
+      ament_index_cpp::get_package_share_directory("voice_command_bridge"));
+    const auto workspace_root = package_workspace_root(package_share);
+    const std::vector<std::filesystem::path> config_dir_candidates {
+      workspace_root / "voice_command_bridge" / "config",
+      workspace_root / "src" / "voice_command_bridge" / "config",
+      package_share / "config",
+    };
+
+    for (const auto & config_dir : config_dir_candidates) {
+      if (std::filesystem::exists(config_dir)) {
+        return (config_dir / "waypoints.yaml").string();
+      }
+    }
+    return (package_share / "config" / "waypoints.yaml").string();
+  } catch (const std::exception &) {
+    return "config/waypoints.yaml";
+  }
+}
+
 double yaml_number(const YAML::Node & node, const std::string & key)
 {
   if (!node[key] || !node[key].IsScalar()) {
@@ -64,6 +110,37 @@ std::string yaml_string(const YAML::Node & node, const std::string & key)
   return node[key].as<std::string>();
 }
 
+std::string optional_scalar(
+  const YAML::Node & node,
+  const std::initializer_list<const char *> & keys)
+{
+  for (const char * key : keys) {
+    if (node[key] && node[key].IsScalar()) {
+      return node[key].as<std::string>();
+    }
+  }
+  return "";
+}
+
+bool is_command_message_type(const std::string & type)
+{
+  static const std::set<std::string> accepted_types = {
+    "voice_command",
+    "command",
+    "commands",
+    "dataset_answer",
+    "prediction",
+  };
+  return type.empty() || accepted_types.count(type) > 0;
+}
+
+YAML::Node make_empty_waypoints_root()
+{
+  YAML::Node root;
+  root["waypoints"] = YAML::Node(YAML::NodeType::Map);
+  return root;
+}
+
 }  // namespace
 
 class VoiceCommandBridge : public rclcpp::Node
@@ -72,6 +149,8 @@ public:
   using DispatchVoiceCommand = voice_command_bridge::srv::DispatchVoiceCommand;
   using NavigateToPose = nav2_msgs::action::NavigateToPose;
   using GoalHandleNavigateToPose = rclcpp_action::ClientGoalHandle<NavigateToPose>;
+  using NavigateThroughPoses = nav2_msgs::action::NavigateThroughPoses;
+  using GoalHandleNavigateThroughPoses = rclcpp_action::ClientGoalHandle<NavigateThroughPoses>;
   using SetParameters = rcl_interfaces::srv::SetParameters;
   using SaveMission = navigation::srv::SaveMission;
   using Trigger = std_srvs::srv::Trigger;
@@ -87,9 +166,13 @@ public:
     robot_frame_ = declare_parameter<std::string>("robot_frame", "base_link");
     navigate_action_name_ = declare_parameter<std::string>(
       "navigate_action_name", "/navigate_to_pose");
+    navigate_through_poses_action_name_ = declare_parameter<std::string>(
+      "navigate_through_poses_action_name", "/navigate_through_poses");
     waypoints_file_ = expand_user_path(
       declare_parameter<std::string>(
-        "waypoints_file", "~/.ros/voice_command_bridge/waypoints.yaml"));
+        "waypoints_file", default_waypoints_file()));
+    persist_waypoints_ = declare_parameter<bool>("persist_waypoints", true);
+    session_waypoints_ = make_empty_waypoints_root();
     linear_speed_mps_ = declare_parameter<double>("linear_speed_mps", 0.15);
     angular_speed_radps_ = declare_parameter<double>("angular_speed_radps", 0.45);
     cmd_vel_period_ms_ = declare_parameter<int>("cmd_vel_period_ms", 100);
@@ -115,6 +198,11 @@ public:
       "stop_mission_service_name", "/stop_navigation_mission");
     mission_player_node_name_ = declare_parameter<std::string>(
       "mission_player_node_name", "/mission_nav2_player");
+    websocket_enabled_ = declare_parameter<bool>("websocket_enabled", true);
+    websocket_host_ = declare_parameter<std::string>("websocket_host", "0.0.0.0");
+    websocket_port_ = declare_parameter<int>("websocket_port", 8765);
+    websocket_target_ = declare_parameter<std::string>("websocket_target", "/");
+    websocket_reconnect_sec_ = declare_parameter<double>("websocket_reconnect_sec", 1.0);
 
     callback_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     cmd_vel_pub_ = create_publisher<geometry_msgs::msg::Twist>(cmd_vel_topic_, 10);
@@ -124,6 +212,13 @@ public:
       get_node_logging_interface(),
       get_node_waitables_interface(),
       navigate_action_name_,
+      callback_group_);
+    nav_through_client_ = rclcpp_action::create_client<NavigateThroughPoses>(
+      get_node_base_interface(),
+      get_node_graph_interface(),
+      get_node_logging_interface(),
+      get_node_waitables_interface(),
+      navigate_through_poses_action_name_,
       callback_group_);
     save_map_client_ = create_client<Trigger>(
       save_map_service_name_, rmw_qos_profile_services_default, callback_group_);
@@ -159,7 +254,17 @@ public:
 
     RCLCPP_INFO(
       get_logger(), "Voice command bridge ready: service=%s cmd_vel=%s waypoints=%s",
-      service_name_.c_str(), cmd_vel_topic_.c_str(), waypoints_file_.c_str());
+      service_name_.c_str(), cmd_vel_topic_.c_str(),
+      persist_waypoints_ ? waypoints_file_.c_str() : "session-only");
+
+    if (websocket_enabled_) {
+      start_websocket_client();
+    }
+  }
+
+  ~VoiceCommandBridge() override
+  {
+    stop_websocket_client();
   }
 
 private:
@@ -168,39 +273,167 @@ private:
     std::shared_ptr<DispatchVoiceCommand::Response> response)
   {
     try {
-      const YAML::Node commands = YAML::Load(request->commands_json);
-      if (!commands || !commands.IsSequence()) {
-        set_response(response, false, "rejected", "", "commands_json must be a JSON array");
+      const auto normalized = normalize_command_payload(request->commands_json);
+      if (normalized.ignore) {
+        set_response(response, true, "ignored", "", normalized.message);
         return;
       }
-
-      if (commands.size() == 0) {
-        set_response(response, false, "ignored", "", "empty command array");
-        return;
-      }
-
-      if (commands.size() > 1) {
-        set_response(response, false, "rejected", "", "multiple commands are not supported yet");
-        return;
-      }
-
-      const YAML::Node command = commands[0];
-      if (!command["name"] || !command["name"].IsScalar()) {
-        set_response(response, false, "rejected", "", "command name is missing");
-        return;
-      }
-
-      const std::string name = command["name"].as<std::string>();
-      const YAML::Node args =
-        command["arguments"] ? command["arguments"] : YAML::Node(YAML::NodeType::Map);
-
-      response->command_name = name;
-      dispatch_command(name, args, response);
+      dispatch_commands(normalized.commands, response);
     } catch (const YAML::Exception & ex) {
       set_response(response, false, "rejected", "", std::string("invalid JSON/YAML: ") + ex.what());
     } catch (const std::exception & ex) {
       set_response(response, false, "failed", response->command_name, ex.what());
     }
+  }
+
+  struct NormalizedCommandPayload
+  {
+    YAML::Node commands;
+    bool ignore = false;
+    std::string message;
+  };
+
+  NormalizedCommandPayload normalize_command_payload(const std::string & payload) const
+  {
+    const YAML::Node root = YAML::Load(payload);
+    return normalize_command_payload(root);
+  }
+
+  NormalizedCommandPayload normalize_command_payload(const YAML::Node & root) const
+  {
+    if (!root) {
+      return ignored_payload("empty payload");
+    }
+
+    if (root.IsSequence()) {
+      return command_payload(root);
+    }
+
+    if (!root.IsMap()) {
+      throw std::runtime_error("command payload must be a JSON array or object");
+    }
+
+    const std::string message_type =
+      optional_scalar(root, {"type", "data_type", "message_type", "kind"});
+    if (!is_command_message_type(message_type)) {
+      return ignored_payload("ignored non-command websocket message type: " + message_type);
+    }
+
+    if (root["answers"]) {
+      return command_payload(load_command_field(root["answers"], "answers"));
+    }
+    if (root["commands"]) {
+      return command_payload(load_command_field(root["commands"], "commands"));
+    }
+    if (root["tool_calling_json"]) {
+      return command_payload(load_command_field(root["tool_calling_json"], "tool_calling_json"));
+    }
+    if (root["tool_calling"]) {
+      return command_payload(load_command_field(root["tool_calling"], "tool_calling"));
+    }
+    if (root["data"]) {
+      const YAML::Node data = root["data"];
+      if (data.IsMap() && data["answers"]) {
+        return command_payload(load_command_field(data["answers"], "data.answers"));
+      }
+      if (data.IsMap() && data["commands"]) {
+        return command_payload(load_command_field(data["commands"], "data.commands"));
+      }
+      if (data.IsMap() && data["tool_calling_json"]) {
+        return command_payload(load_command_field(data["tool_calling_json"], "data.tool_calling_json"));
+      }
+      if (data.IsMap() && data["tool_calling"]) {
+        return command_payload(load_command_field(data["tool_calling"], "data.tool_calling"));
+      }
+      if (data.IsSequence()) {
+        return command_payload(data);
+      }
+    }
+
+    return ignored_payload("no command array found in websocket message");
+  }
+
+  YAML::Node load_command_field(const YAML::Node & field, const std::string & field_name) const
+  {
+    if (field.IsSequence()) {
+      return field;
+    }
+    if (field.IsScalar()) {
+      return YAML::Load(field.as<std::string>());
+    }
+    throw std::runtime_error(field_name + " must be a JSON array or JSON array string");
+  }
+
+  NormalizedCommandPayload command_payload(const YAML::Node & commands) const
+  {
+    if (!commands || !commands.IsSequence()) {
+      throw std::runtime_error("commands must be a JSON array");
+    }
+    NormalizedCommandPayload payload;
+    payload.commands = commands;
+    return payload;
+  }
+
+  NormalizedCommandPayload ignored_payload(const std::string & message) const
+  {
+    NormalizedCommandPayload payload;
+    payload.ignore = true;
+    payload.message = message;
+    return payload;
+  }
+
+  void dispatch_commands(
+    const YAML::Node & commands,
+    const std::shared_ptr<DispatchVoiceCommand::Response> & response)
+  {
+    if (!commands || !commands.IsSequence()) {
+      set_response(response, false, "rejected", "", "commands_json must be a JSON array");
+      return;
+    }
+
+    if (commands.size() == 0) {
+      set_response(response, false, "ignored", "", "empty command array");
+      return;
+    }
+
+    if (commands.size() > 1) {
+      std::vector<std::string> waypoint_names;
+      for (const auto & command : commands) {
+        if (!command["name"] || !command["name"].IsScalar()) {
+          set_response(response, false, "rejected", "", "command name is missing");
+          return;
+        }
+        const std::string name = command["name"].as<std::string>();
+        if (name != "goto_waypoint") {
+          set_response(
+            response, false, "rejected", name,
+            "multiple commands are only supported for goto_waypoint routes");
+          return;
+        }
+        const YAML::Node args =
+          command["arguments"] ? command["arguments"] : YAML::Node(YAML::NodeType::Map);
+        waypoint_names.push_back(yaml_string(args, "name"));
+      }
+
+      goto_waypoints(waypoint_names);
+      set_response(
+        response, true, "accepted", "goto_waypoint",
+        "navigation route sent: " + join_names(waypoint_names));
+      return;
+    }
+
+    const YAML::Node command = commands[0];
+    if (!command["name"] || !command["name"].IsScalar()) {
+      set_response(response, false, "rejected", "", "command name is missing");
+      return;
+    }
+
+    const std::string name = command["name"].as<std::string>();
+    const YAML::Node args =
+      command["arguments"] ? command["arguments"] : YAML::Node(YAML::NodeType::Map);
+
+    response->command_name = name;
+    dispatch_command(name, args, response);
   }
 
   void dispatch_command(
@@ -406,30 +639,75 @@ private:
 
   void set_waypoint(const std::string & name)
   {
+    if (name.empty()) {
+      throw std::runtime_error("waypoint name is empty");
+    }
+
     const auto transform = tf_buffer_.lookupTransform(
       global_frame_, robot_frame_, tf2::TimePointZero,
       tf2::durationFromSec(tf_timeout_sec_));
 
-    YAML::Node root = load_waypoints();
-    YAML::Node waypoint;
-    waypoint["frame_id"] = global_frame_;
-    waypoint["x"] = transform.transform.translation.x;
-    waypoint["y"] = transform.transform.translation.y;
-    waypoint["z"] = transform.transform.translation.z;
-    waypoint["qx"] = transform.transform.rotation.x;
-    waypoint["qy"] = transform.transform.rotation.y;
-    waypoint["qz"] = transform.transform.rotation.z;
-    waypoint["qw"] = transform.transform.rotation.w;
-    root["waypoints"][name] = waypoint;
-    save_waypoints(root);
+    {
+      std::lock_guard<std::mutex> lock(waypoints_mutex_);
+      YAML::Node root = load_waypoints();
+      YAML::Node waypoint;
+      waypoint["frame_id"] = global_frame_;
+      waypoint["x"] = transform.transform.translation.x;
+      waypoint["y"] = transform.transform.translation.y;
+      waypoint["z"] = transform.transform.translation.z;
+      waypoint["qx"] = transform.transform.rotation.x;
+      waypoint["qy"] = transform.transform.rotation.y;
+      waypoint["qz"] = transform.transform.rotation.z;
+      waypoint["qw"] = transform.transform.rotation.w;
+      root["waypoints"][name] = waypoint;
+      save_waypoints(root);
+    }
+  }
+
+  std::string join_names(const std::vector<std::string> & names) const
+  {
+    std::ostringstream out;
+    for (std::size_t i = 0; i < names.size(); ++i) {
+      if (i > 0) {
+        out << " -> ";
+      }
+      out << names[i];
+    }
+    return out.str();
+  }
+
+  geometry_msgs::msg::PoseStamped pose_from_waypoint(
+    const YAML::Node & waypoint,
+    const rclcpp::Time & stamp) const
+  {
+    geometry_msgs::msg::PoseStamped pose;
+    pose.header.frame_id = waypoint["frame_id"] ? waypoint["frame_id"].as<std::string>() : global_frame_;
+    pose.header.stamp = stamp;
+    pose.pose.position.x = yaml_number(waypoint, "x");
+    pose.pose.position.y = yaml_number(waypoint, "y");
+    pose.pose.position.z = yaml_number(waypoint, "z");
+    pose.pose.orientation.x = yaml_number(waypoint, "qx");
+    pose.pose.orientation.y = yaml_number(waypoint, "qy");
+    pose.pose.orientation.z = yaml_number(waypoint, "qz");
+    pose.pose.orientation.w = yaml_number(waypoint, "qw");
+    return pose;
   }
 
   void goto_waypoint(const std::string & name)
   {
-    YAML::Node root = load_waypoints();
-    YAML::Node waypoint = root["waypoints"][name];
-    if (!waypoint) {
-      throw std::runtime_error("waypoint not found: " + name);
+    if (name.empty()) {
+      throw std::runtime_error("waypoint name is empty");
+    }
+
+    NavigateToPose::Goal goal;
+    {
+      std::lock_guard<std::mutex> lock(waypoints_mutex_);
+      YAML::Node root = load_waypoints();
+      YAML::Node waypoint = root["waypoints"][name];
+      if (!waypoint) {
+        throw std::runtime_error("waypoint not found: " + name);
+      }
+      goal.pose = pose_from_waypoint(waypoint, now());
     }
 
     if (!nav_client_->wait_for_action_server(
@@ -437,17 +715,6 @@ private:
     {
       throw std::runtime_error("NavigateToPose action server is not available");
     }
-
-    NavigateToPose::Goal goal;
-    goal.pose.header.frame_id = waypoint["frame_id"] ? waypoint["frame_id"].as<std::string>() : global_frame_;
-    goal.pose.header.stamp = now();
-    goal.pose.pose.position.x = yaml_number(waypoint, "x");
-    goal.pose.pose.position.y = yaml_number(waypoint, "y");
-    goal.pose.pose.position.z = yaml_number(waypoint, "z");
-    goal.pose.pose.orientation.x = yaml_number(waypoint, "qx");
-    goal.pose.pose.orientation.y = yaml_number(waypoint, "qy");
-    goal.pose.pose.orientation.z = yaml_number(waypoint, "qz");
-    goal.pose.pose.orientation.w = yaml_number(waypoint, "qw");
 
     auto send_options = rclcpp_action::Client<NavigateToPose>::SendGoalOptions();
     send_options.goal_response_callback =
@@ -491,13 +758,89 @@ private:
     }
   }
 
+  void goto_waypoints(const std::vector<std::string> & names)
+  {
+    if (names.size() == 1) {
+      goto_waypoint(names.front());
+      return;
+    }
+
+    NavigateThroughPoses::Goal goal;
+    {
+      std::lock_guard<std::mutex> lock(waypoints_mutex_);
+      YAML::Node root = load_waypoints();
+      const auto stamp = now();
+      for (const auto & name : names) {
+        const YAML::Node waypoint = root["waypoints"][name];
+        if (!waypoint) {
+          throw std::runtime_error("waypoint not found: " + name);
+        }
+        goal.poses.push_back(pose_from_waypoint(waypoint, stamp));
+      }
+    }
+
+    if (!nav_through_client_->wait_for_action_server(
+        std::chrono::duration<double>(nav_server_timeout_sec_)))
+    {
+      throw std::runtime_error("NavigateThroughPoses action server is not available");
+    }
+
+    const std::string route_name = join_names(names);
+    auto send_options = rclcpp_action::Client<NavigateThroughPoses>::SendGoalOptions();
+    send_options.goal_response_callback =
+      [this, route_name](std::shared_ptr<GoalHandleNavigateThroughPoses> goal_handle) {
+        if (!goal_handle) {
+          RCLCPP_WARN(get_logger(), "Navigation route rejected: %s", route_name.c_str());
+          return;
+        }
+        {
+          std::lock_guard<std::mutex> lock(nav_mutex_);
+          current_nav_through_goal_ = goal_handle;
+        }
+        RCLCPP_INFO(get_logger(), "Navigation route accepted: %s", route_name.c_str());
+      };
+    send_options.result_callback =
+      [this, route_name](const GoalHandleNavigateThroughPoses::WrappedResult & result) {
+        {
+          std::lock_guard<std::mutex> lock(nav_mutex_);
+          if (current_nav_through_goal_ &&
+            current_nav_through_goal_->get_goal_id() == result.goal_id)
+          {
+            current_nav_through_goal_.reset();
+          }
+        }
+        RCLCPP_INFO(
+          get_logger(), "Navigation route finished for %s with result code %d",
+          route_name.c_str(), static_cast<int>(result.code));
+      };
+
+    auto future_goal_handle = nav_through_client_->async_send_goal(goal, send_options);
+    if (future_goal_handle.wait_for(std::chrono::duration<double>(nav_server_timeout_sec_)) !=
+      std::future_status::ready)
+    {
+      throw std::runtime_error("timed out while sending NavigateThroughPoses goal");
+    }
+
+    const auto goal_handle = future_goal_handle.get();
+    if (!goal_handle) {
+      throw std::runtime_error("NavigateThroughPoses goal was rejected");
+    }
+    {
+      std::lock_guard<std::mutex> lock(nav_mutex_);
+      current_nav_through_goal_ = goal_handle;
+    }
+  }
+
   void cancel_navigation_goal()
   {
     std::shared_ptr<GoalHandleNavigateToPose> goal_handle;
+    std::shared_ptr<GoalHandleNavigateThroughPoses> through_goal_handle;
     {
       std::lock_guard<std::mutex> lock(nav_mutex_);
       goal_handle = current_nav_goal_;
+      through_goal_handle = current_nav_through_goal_;
       current_nav_goal_.reset();
+      current_nav_through_goal_.reset();
     }
 
     try {
@@ -511,6 +854,18 @@ private:
           goal_handle,
           [logger = get_logger()](NavigateToPose::Impl::CancelGoalService::Response::SharedPtr) {
             RCLCPP_INFO(logger, "Navigation cancel request acknowledged");
+          });
+      }
+      if (nav_through_client_->action_server_is_ready()) {
+        nav_through_client_->async_cancel_all_goals(
+          [logger = get_logger()](NavigateThroughPoses::Impl::CancelGoalService::Response::SharedPtr) {
+            RCLCPP_INFO(logger, "Navigation route cancel-all request acknowledged");
+          });
+      } else if (through_goal_handle) {
+        nav_through_client_->async_cancel_goal(
+          through_goal_handle,
+          [logger = get_logger()](NavigateThroughPoses::Impl::CancelGoalService::Response::SharedPtr) {
+            RCLCPP_INFO(logger, "Navigation route cancel request acknowledged");
           });
       }
     } catch (const std::exception & ex) {
@@ -589,12 +944,19 @@ private:
     }
   }
 
-  YAML::Node load_waypoints() const
+  YAML::Node load_waypoints()
   {
+    if (!persist_waypoints_) {
+      if (!session_waypoints_ || !session_waypoints_["waypoints"] ||
+        !session_waypoints_["waypoints"].IsMap())
+      {
+        session_waypoints_ = make_empty_waypoints_root();
+      }
+      return YAML::Clone(session_waypoints_);
+    }
+
     if (!std::filesystem::exists(waypoints_file_)) {
-      YAML::Node root;
-      root["waypoints"] = YAML::Node(YAML::NodeType::Map);
-      return root;
+      return make_empty_waypoints_root();
     }
 
     YAML::Node root = YAML::LoadFile(waypoints_file_);
@@ -604,8 +966,16 @@ private:
     return root;
   }
 
-  void save_waypoints(const YAML::Node & root) const
+  void save_waypoints(const YAML::Node & root)
   {
+    if (!persist_waypoints_) {
+      session_waypoints_ = YAML::Clone(root);
+      if (!session_waypoints_["waypoints"] || !session_waypoints_["waypoints"].IsMap()) {
+        session_waypoints_["waypoints"] = YAML::Node(YAML::NodeType::Map);
+      }
+      return;
+    }
+
     const std::filesystem::path path(waypoints_file_);
     if (path.has_parent_path()) {
       std::filesystem::create_directories(path.parent_path());
@@ -631,12 +1001,204 @@ private:
     response->message = message;
   }
 
+  void start_websocket_client()
+  {
+    if (websocket_port_ <= 0 || websocket_port_ > 65535) {
+      RCLCPP_WARN(get_logger(), "Websocket client disabled: invalid port %d", websocket_port_);
+      return;
+    }
+
+    RCLCPP_INFO(
+      get_logger(), "Voice command websocket client configured: ws://%s:%d%s",
+      websocket_host_.c_str(), websocket_port_, websocket_target_.c_str());
+    websocket_running_.store(true);
+    websocket_thread_ = std::thread([this]() {
+      run_websocket_client();
+    });
+  }
+
+  void stop_websocket_client()
+  {
+    websocket_running_.store(false);
+    std::shared_ptr<asio::io_context> ioc;
+    std::shared_ptr<websocket::stream<tcp::socket>> ws;
+    {
+      std::lock_guard<std::mutex> lock(websocket_mutex_);
+      ioc = websocket_ioc_;
+      ws = websocket_stream_;
+    }
+    if (ws) {
+      boost::system::error_code ignored_ec;
+      ws->next_layer().shutdown(tcp::socket::shutdown_both, ignored_ec);
+      ws->next_layer().close(ignored_ec);
+    }
+    if (ioc) {
+      ioc->stop();
+    }
+    if (websocket_thread_.joinable()) {
+      websocket_thread_.join();
+    }
+  }
+
+  void clear_websocket_client_handles()
+  {
+    std::lock_guard<std::mutex> lock(websocket_mutex_);
+    websocket_stream_.reset();
+    websocket_ioc_.reset();
+  }
+
+  void run_websocket_client()
+  {
+    const auto retry_delay = std::chrono::duration<double>(
+      std::max(0.1, websocket_reconnect_sec_));
+
+    while (websocket_running_.load() && rclcpp::ok()) {
+      auto ioc = std::make_shared<asio::io_context>();
+      std::shared_ptr<websocket::stream<tcp::socket>> ws;
+      bool retry_delay_elapsed = false;
+      try {
+        tcp::resolver resolver(*ioc);
+        const std::string port = std::to_string(websocket_port_);
+        RCLCPP_INFO(
+          get_logger(), "Connecting to voice websocket server ws://%s:%s%s",
+          websocket_host_.c_str(), port.c_str(), websocket_target_.c_str());
+        const auto results = resolver.resolve(websocket_host_, port);
+        ws = std::make_shared<websocket::stream<tcp::socket>>(*ioc);
+        {
+          std::lock_guard<std::mutex> lock(websocket_mutex_);
+          websocket_ioc_ = ioc;
+          websocket_stream_ = ws;
+        }
+        asio::connect(ws->next_layer(), results.begin(), results.end());
+        ws->set_option(websocket::stream_base::timeout::suggested(beast::role_type::client));
+        ws->handshake(websocket_host_ + ":" + port, websocket_target_);
+
+        RCLCPP_INFO(
+          get_logger(), "Connected to voice websocket server ws://%s:%s%s",
+          websocket_host_.c_str(), port.c_str(), websocket_target_.c_str());
+
+        while (websocket_running_.load() && rclcpp::ok()) {
+          beast::flat_buffer buffer;
+          boost::system::error_code ec;
+          ws->read(buffer, ec);
+          if (!websocket_running_.load() || !rclcpp::ok()) {
+            break;
+          }
+          if (ec == websocket::error::closed) {
+            RCLCPP_INFO(get_logger(), "Voice websocket server closed connection");
+            break;
+          }
+          if (ec) {
+            RCLCPP_WARN(get_logger(), "Voice websocket read failed: %s", ec.message().c_str());
+            break;
+          }
+          if (ws->got_binary()) {
+            RCLCPP_DEBUG(get_logger(), "Ignored binary websocket message");
+            continue;
+          }
+
+          const std::string message = beast::buffers_to_string(buffer.data());
+          RCLCPP_INFO(get_logger(), "Received websocket data: %s", message.c_str());
+          const std::string reply = handle_websocket_message(message);
+          RCLCPP_INFO(get_logger(), "Sending websocket result: %s", reply.c_str());
+          ws->text(true);
+          ws->write(asio::buffer(reply), ec);
+          if (ec) {
+            RCLCPP_WARN(get_logger(), "Voice websocket write failed: %s", ec.message().c_str());
+            break;
+          }
+        }
+      } catch (const std::exception & ex) {
+        if (websocket_running_.load() && rclcpp::ok()) {
+          RCLCPP_INFO(
+            get_logger(),
+            "Waiting for voice websocket server ws://%s:%d%s: %s. Retrying in %.1f sec",
+            websocket_host_.c_str(), websocket_port_, websocket_target_.c_str(), ex.what(),
+            websocket_reconnect_sec_);
+          std::this_thread::sleep_for(retry_delay);
+          retry_delay_elapsed = true;
+        }
+      }
+
+      clear_websocket_client_handles();
+      if (websocket_running_.load() && rclcpp::ok() && !retry_delay_elapsed) {
+        RCLCPP_INFO(
+          get_logger(), "Reconnecting to voice websocket server in %.1f sec",
+          websocket_reconnect_sec_);
+        std::this_thread::sleep_for(retry_delay);
+      }
+    }
+  }
+
+  std::string handle_websocket_message(const std::string & message)
+  {
+    auto response = std::make_shared<DispatchVoiceCommand::Response>();
+    try {
+      const auto normalized = normalize_command_payload(message);
+      if (normalized.ignore) {
+        set_response(response, true, "ignored", "", normalized.message);
+      } else {
+        dispatch_commands(normalized.commands, response);
+      }
+    } catch (const YAML::Exception & ex) {
+      set_response(response, false, "rejected", "", std::string("invalid JSON/YAML: ") + ex.what());
+    } catch (const std::exception & ex) {
+      set_response(response, false, "failed", response->command_name, ex.what());
+    }
+
+    std::ostringstream out;
+    out << "{"
+        << "\"ok\":" << (response->ok ? "true" : "false") << ","
+        << "\"status\":\"" << json_escape(response->status) << "\","
+        << "\"command_name\":\"" << json_escape(response->command_name) << "\","
+        << "\"message\":\"" << json_escape(response->message) << "\""
+        << "}";
+    return out.str();
+  }
+
+  std::string json_escape(const std::string & text) const
+  {
+    std::ostringstream out;
+    for (const char ch : text) {
+      switch (ch) {
+        case '\\':
+          out << "\\\\";
+          break;
+        case '"':
+          out << "\\\"";
+          break;
+        case '\n':
+          out << "\\n";
+          break;
+        case '\r':
+          out << "\\r";
+          break;
+        case '\t':
+          out << "\\t";
+          break;
+        default:
+          if (static_cast<unsigned char>(ch) < 0x20) {
+            out << "\\u"
+                << std::hex << std::uppercase << std::setw(4) << std::setfill('0')
+                << static_cast<int>(static_cast<unsigned char>(ch))
+                << std::dec << std::nouppercase;
+          } else {
+            out << ch;
+          }
+          break;
+      }
+    }
+    return out.str();
+  }
+
   std::string cmd_vel_topic_;
   std::string service_name_;
   std::string global_frame_;
   std::string robot_frame_;
   std::string navigate_action_name_;
+  std::string navigate_through_poses_action_name_;
   std::string waypoints_file_;
+  bool persist_waypoints_;
   double linear_speed_mps_;
   double angular_speed_radps_;
   int cmd_vel_period_ms_;
@@ -653,11 +1215,17 @@ private:
   std::string start_mission_service_name_;
   std::string stop_mission_service_name_;
   std::string mission_player_node_name_;
+  bool websocket_enabled_;
+  std::string websocket_host_;
+  int websocket_port_;
+  std::string websocket_target_;
+  double websocket_reconnect_sec_;
 
   rclcpp::CallbackGroup::SharedPtr callback_group_;
   rclcpp::Publisher<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_pub_;
   rclcpp::Service<DispatchVoiceCommand>::SharedPtr service_;
   rclcpp_action::Client<NavigateToPose>::SharedPtr nav_client_;
+  rclcpp_action::Client<NavigateThroughPoses>::SharedPtr nav_through_client_;
   rclcpp::Client<Trigger>::SharedPtr save_map_client_;
   rclcpp::Client<Trigger>::SharedPtr record_start_client_;
   rclcpp::Client<Trigger>::SharedPtr record_waypoint_client_;
@@ -671,12 +1239,20 @@ private:
   tf2_ros::Buffer tf_buffer_;
   tf2_ros::TransformListener tf_listener_;
 
+  YAML::Node session_waypoints_;
+  std::mutex waypoints_mutex_;
   std::mutex motion_mutex_;
   geometry_msgs::msg::Twist active_twist_;
   std::chrono::steady_clock::time_point motion_end_time_;
   rclcpp::TimerBase::SharedPtr motion_timer_;
   std::mutex nav_mutex_;
   std::shared_ptr<GoalHandleNavigateToPose> current_nav_goal_;
+  std::shared_ptr<GoalHandleNavigateThroughPoses> current_nav_through_goal_;
+  std::atomic_bool websocket_running_{false};
+  std::thread websocket_thread_;
+  std::mutex websocket_mutex_;
+  std::shared_ptr<asio::io_context> websocket_ioc_;
+  std::shared_ptr<websocket::stream<tcp::socket>> websocket_stream_;
 };
 
 int main(int argc, char ** argv)

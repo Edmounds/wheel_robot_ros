@@ -4,13 +4,14 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, ExecuteProcess
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
 
 
 def generate_launch_description():
     sim_dir = get_package_share_directory("sim")
     default_world = os.path.join(sim_dir, "worlds", "ab_navigation.world")
+    default_rviz_config = os.path.join(sim_dir, "rviz", "sim_world.rviz")
     robot_urdf = os.path.join(sim_dir, "urdf", "two_wheel_diff_robot.urdf")
 
     with open(robot_urdf, "r", encoding="utf-8") as robot_file:
@@ -20,6 +21,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     headless = LaunchConfiguration("headless")
     paused = LaunchConfiguration("paused")
+    use_rviz = LaunchConfiguration("use_rviz")
+    rviz_config = LaunchConfiguration("rviz_config")
     x = LaunchConfiguration("x")
     y = LaunchConfiguration("y")
     z = LaunchConfiguration("z")
@@ -30,6 +33,8 @@ def generate_launch_description():
         DeclareLaunchArgument("use_sim_time", default_value="true"),
         DeclareLaunchArgument("headless", default_value="true"),
         DeclareLaunchArgument("paused", default_value="false"),
+        DeclareLaunchArgument("use_rviz", default_value="false"),
+        DeclareLaunchArgument("rviz_config", default_value=default_rviz_config),
         DeclareLaunchArgument("x", default_value="-2.0"),
         DeclareLaunchArgument("y", default_value="-1.4"),
         DeclareLaunchArgument("z", default_value="0.08"),
@@ -95,5 +100,15 @@ def generate_launch_description():
                 "-Y",
                 yaw,
             ],
+        ),
+        Node(
+            package="rviz2",
+            executable="rviz2",
+            name="rviz2_sim",
+            output="screen",
+            arguments=["-d", rviz_config],
+            condition=IfCondition(PythonExpression([
+                "'", use_rviz, "' == 'true' and '", headless, "' != 'true'",
+            ])),
         ),
     ])

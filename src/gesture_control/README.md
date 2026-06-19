@@ -9,7 +9,7 @@ and publishes robot control commands.
 ## Gesture Mapping
 
 - `Open_Palm`: stop, publish zero `/cmd_vel`
-- `Closed_Fist`: follow hand movement
+- `Closed_Fist`: turn in place
 - `Pointing_Up`: move forward
 - `Thumb_Up`: call `SetBodyHeight` with `command=1`
 - `Victory`: call `SetBodyHeight` with `command=0`
@@ -30,8 +30,11 @@ string message
 ```bash
 colcon build --symlink-install --packages-select gesture_control
 source install/setup.bash
-ros2 launch gesture_control gesture_control.launch.py camera_path:=/dev/video0
+ros2 launch gesture_control gesture_control.launch.py
 ```
+
+The default camera path is `/dev/video2`. Override it with
+`camera_path:=/dev/video0` when needed.
 
 For bench testing without the real height controller:
 
